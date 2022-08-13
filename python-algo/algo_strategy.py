@@ -72,34 +72,40 @@ class AlgoStrategy(gamelib.AlgoCore):
         We will place turrets near locations the opponent managed to score on.
         For offense we will use long range demolishers if they place stationary units near the enemy's front.
         If there are no stationary units to attack in the front, we will send Scouts to try and score quickly.
+
+        Thoughts:
+         - build wall euclidean distance of 3 from turrents, then send demolishers (done)
+         - score in areas poorly defended, send scout after demolisher if everywhere is guarded
+         - check if left or right side is guarded
+         - problem: spawning walls at 11, demolisher is at 10 so can only reach 14 (should remove 15 or advance)
+         - save up then throw funnel strategy
         """
-        # First, place basic defenses
+        # First, place/repair basic defenses
         self.build_defences(game_state)
+
         # Now build reactive defenses based on where the enemy scored
-        self.build_reactive_defense(game_state)
+        # self.build_reactive_defense(game_state)
 
         # If the turn is less than 5, stall with interceptors and wait to see enemy's base
-        if game_state.turn_number < 5:
+        if game_state.turn_number < 2:
             self.stall_with_interceptors(game_state)
         else:
-            # Now let's analyze the enemy base to see where their defenses are concentrated.
-            # If they have many units in the front we can build a line for our demolishers to attack them at long range.
-            if self.detect_enemy_unit(game_state, unit_type=None, valid_x=None, valid_y=[14, 15]) > 10:
-                self.demolisher_line_strategy(game_state)
-            else:
-                # They don't have many units in the front so lets figure out their least defended area and send Scouts there.
+            # Use demolishers
+            # if self.detect_enemy_unit(game_state, unit_type=None, valid_x=None, valid_y=[14, 15]) > 10:
+            #     self.demolisher_line_strategy(game_state)
 
-                # Only spawn Scouts every other turn
-                # Sending more at once is better since attacks can only hit a single scout at a time
-                if game_state.turn_number % 2 == 1:
-                    # To simplify we will just check sending them from back left and right
-                    scout_spawn_location_options = [[13, 0], [14, 0]]
-                    best_location = self.least_damage_spawn_location(game_state, scout_spawn_location_options)
-                    game_state.attempt_spawn(SCOUT, best_location, 1000)
+            # Use interceptors
+            accumulated_MPs = 8
+            if game_state.get_resources(0)[1] >= accumulated_MPs:
+                # To simplify we will just check sending them from back left and right
+                friendly_edges = game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_LEFT) + game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_RIGHT)
+                unblocked_locations_on_edge = self.filter_blocked_locations(friendly_edges, game_state)
+                best_location = self.least_damage_spawn_location(game_state, unblocked_locations_on_edge)
+                game_state.attempt_spawn(INTERCEPTOR, best_location, 1000)
 
-                # Lastly, if we have spare SP, let's build some supports
-                support_locations = [[13, 2], [14, 2], [13, 3], [14, 3]]
-                game_state.attempt_spawn(SUPPORT, support_locations)
+            # Lastly, if we have spare SP, let's build some supports
+            # support_locations = [[13, 2], [14, 2], [13, 3], [14, 3]]
+            # game_state.attempt_spawn(SUPPORT, support_locations)
 
     def build_defences(self, game_state):
         """
@@ -110,15 +116,24 @@ class AlgoStrategy(gamelib.AlgoCore):
         # More community tools available at: https://terminal.c1games.com/rules#Download
 
         # Place turrets that attack enemy units
-        turret_locations = [[0, 13], [27, 13], [8, 11], [19, 11], [13, 11], [14, 11]]
+        turret_locations = [[4, 12], [23, 12], [25, 12], [10, 6], [17, 6]]
         # attempt_spawn will try to spawn units if we have resources, and will check if a blocking unit is already there
         game_state.attempt_spawn(TURRET, turret_locations)
         
-        # Place walls in front of turrets to soak up damage for them
-        wall_locations = [[8, 12], [19, 12]]
+        # Place walls to soak up damage for turrets
+        wall_locations = [[10, 7], [17, 7]]
+        # Place left frontline walls
+        for x in range(6):
+            wall_locations.append([x, 13])
+        # Place right frontline walls
+        for x in range(22, 28):
+            wall_locations.append([x, 13])
+        # Place bottom walls
+        for x in range(11, 17):
+            wall_locations.append([x, 5])
         game_state.attempt_spawn(WALL, wall_locations)
         # upgrade walls so they soak more damage
-        game_state.attempt_upgrade(wall_locations)
+        # game_state.attempt_upgrade(wall_locations)
 
     def build_reactive_defense(self, game_state):
         """
@@ -142,8 +157,9 @@ class AlgoStrategy(gamelib.AlgoCore):
         # since we can't deploy units there.
         deploy_locations = self.filter_blocked_locations(friendly_edges, game_state)
         
-        # While we have remaining MP to spend lets send out interceptors randomly.
-        while game_state.get_resource(MP) >= game_state.type_cost(INTERCEPTOR)[MP] and len(deploy_locations) > 0:
+        # Only send out 2 interceptors to acccumulate MP
+        MP_threshold = 2 # game_state.type_cost(INTERCEPTOR)[MP]
+        for _ in range(MP_threshold):
             # Choose a random deploy location.
             deploy_index = random.randint(0, len(deploy_locations) - 1)
             deploy_location = deploy_locations[deploy_index]
@@ -194,13 +210,41 @@ class AlgoStrategy(gamelib.AlgoCore):
         
         # Now just return the location that takes the least damage
         return location_options[damages.index(min(damages))]
+    
+    # def least_damage_spawn_location(self, game_state, location_options, n):
+    #     """
+    #     This function will help us guess which location is the safest to spawn moving units from.
+    #     It gets the path the unit will take then checks locations on that path to 
+    #     estimate the path's damage risk.
+
+    #     Returns:
+    #         a list containing the top n locations with the least damage
+    #     """
+    #     damages = []
+    #     # Get the damage estimate each path will take
+    #     for i in range(len(location_options)):
+    #         location = location_options[i]
+    #         path = game_state.find_path_to_edge(location)
+    #         damage = 0
+    #         for path_location in path:
+    #             # Get number of enemy turrets that can attack each location and multiply by turret damage
+    #             damage += len(game_state.get_attackers(path_location, 0)) * gamelib.GameUnit(TURRET, game_state.config).damage_i
+    #         damages.append((damage, location))
+    #     damages = sorted(damages, reverse=False, key=lambda x: x[0])
+    #     # Now just return the location that takes the least damage
+    #     return damages[0:n]
 
     def detect_enemy_unit(self, game_state, unit_type=None, valid_x = None, valid_y = None):
+        assert(valid_x == None or len(valid_x) == 2)
+        assert(valid_y == None or len(valid_y) == 2)
         total_units = 0
         for location in game_state.game_map:
             if game_state.contains_stationary_unit(location):
                 for unit in game_state.game_map[location]:
-                    if unit.player_index == 1 and (unit_type is None or unit.unit_type == unit_type) and (valid_x is None or location[0] in valid_x) and (valid_y is None or location[1] in valid_y):
+                    check_unit_type = unit_type is None or unit.unit_type == unit_type
+                    check_x = valid_x is None or (location[0] >= valid_x[0] and location[0] <= valid_x[1])
+                    check_y = valid_y is None or (location[1] >= valid_y[0] and location[1] <= valid_y[1])
+                    if unit.player_index == 1 and check_unit_type and check_x and check_y:
                         total_units += 1
         return total_units
         
